@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Aus dem Kontext gerissen</title>
+<style>
+:root{--bg:#fff7e6;--card:#fff;--ink:#1d1a2b;--mut:#6b6780;--acc:#ff4d6d;--acc2:#4361ee;--line:#e5dfd0}
+@media (prefers-color-scheme:dark){:root{--bg:#15131f;--card:#211e30;--ink:#f4f1ff;--mut:#a29dbb;--line:#35314a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;min-height:100vh}
+main{max-width:560px;margin:0 auto;padding:max(20px,env(safe-area-inset-top)) 16px 40px}
+h1{font-size:2rem;margin:.2em 0;line-height:1.1}
+h2{margin:.2em 0 .5em}
+.mut{color:var(--mut)}
+.card{background:var(--card);border:2px solid var(--line);border-radius:16px;padding:14px;margin:12px 0}
+.post{border-left:6px solid var(--acc2)}
+.reply{border-left:6px solid var(--acc)}
+.tag{font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);font-weight:700}
+input,textarea{width:100%;font:inherit;padding:12px;border-radius:12px;border:2px solid var(--line);background:var(--card);color:var(--ink);margin:6px 0}
+textarea{min-height:110px;resize:vertical}
+button{font:inherit;font-weight:700;padding:13px 18px;border:0;border-radius:12px;background:var(--acc);color:#fff;cursor:pointer;width:100%;margin-top:8px}
+button.alt{background:var(--acc2)}
+button:disabled{opacity:.4}
+.big{text-align:center;padding:24px 10px}
+.code{font-size:3rem;font-weight:800;letter-spacing:.2em}
+.row{display:flex;justify-content:space-between;gap:8px;padding:2px 0}
+.votes{color:var(--acc);font-weight:700}
+.pick{cursor:pointer}
+.pick.sel{outline:3px solid var(--acc)}
+.pick.off{opacity:.45;cursor:not-allowed}
+.err{background:#ffe3e8;color:#7a0020;border-radius:12px;padding:10px;margin:10px 0}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const PFX='auskontext-',ROUNDS=2,MAXP=8,VERSION=2;
+const PROMPTS=[
+"Schreibe eine Bewertung für ein Produkt. Verrate nicht, welches.",
+"Deine Antwort auf eine Nachricht von einer unbekannten Nummer.",
+"Dein Kommentar unter einem Foto, das gerade viral geht.",
+"Du antwortest in einem Forum auf eine verzweifelte Frage.",
+"Dein letzter Satz in einer Sprachnachricht an deine Chefin.",
+"Eine Notiz, die du an einer Haustür hinterlässt.",
+"Dein Beitrag in der WhatsApp-Gruppe der Nachbarschaft.",
+"Ein Satz aus deiner Dankesrede bei einer Preisverleihung.",
+"Dein Lebenslauf-Hobby, das HR-Leute ratlos macht.",
+"Deine Antwort auf die Frage »Und, wie war dein Wochenende?«",
+"Der Kommentar, den du später sofort bereust.",
+"Deine Erklärung, warum du zu spät bist."
+];
+const $=document.getElementById('app');
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const shuffle=a=>{a=[...a];for(let i=a.length-1;i>0;i--){const j=Math.random()*(i+1)|0;[a[i],a[j]]=[a[j],a[i]]}return a};
+const S={host:false,code:'',peer:null,hostConn:null,G:null,V:null,sel:null,key:''};
+const R=h=>{$.innerHTML=h};
+
+/* ---------- Startseite ---------- */
+function home(msg){
+  const r=new URLSearchParams(location.search).get('r')||'';
+  R(`<h1>🤪 Aus dem Kontext gerissen</h1>
+  <p class="mut">Jeder spielt auf dem eigenen Handy. Jeder stellt eine Frage, ein anderer beantwortet sie, und ein Dritter erfindet dazu einen neuen Post, ohne die Frage zu kennen. Zum Schluss wird abgestimmt.</p>
+  ${msg?`<div class="err">${esc(msg)}</div>`:''}
+  <div class="card"><div class="tag">Dein Name</div><input id="nm" maxlength="14" placeholder="Name"></div>
+  <button onclick="createRoom()">Neuen Raum erstellen</button>
+  <div class="card"><div class="tag">Oder Raumcode eingeben</div>
+  <input id="cd" maxlength="4" placeholder="ABCD" value="${esc(r.toUpperCase())}" style="text-transform:uppercase">
+  <button class="alt" onclick="joinRoom()">Beitreten</button></div>`);
+}
+const getName=()=>{const v=document.getElementById('nm').value.trim();if(!v)home('Bitte gib einen Namen ein.');return v};
+
+/* ---------- Host ---------- */
+function mkCode(){const c='ABCDEFGHJKLMNPQRSTUVWXYZ';return Array.from({length:4},()=>c[Math.random()*c.length|0]).join('')}
+function createRoom(){
+  const nm=getName();if(!nm)return;
+  S.host=true;S.code=mkCode();
+  R('<div class="card big">Raum wird erstellt …</div>');
+  const p=new Peer(PFX+S.code);S.peer=p;
+  p.on('open',()=>{S.G={phase:'lobby',round:0,players:[{name:nm,conn:null,score:0}]};broadcast()});
+  p.on('error',e=>{p.destroy();if(e.type==='unavailable-id'){createRoom2(nm)}else home('Verbindungsfehler ('+e.type+'). Bitte neu versuchen.')});
+  p.on('connection',c=>{c.on('data',m=>onMsg(c,m));c.on('close',()=>{})});
+}
+function createRoom2(nm){document.getElementById('nm')||home();setTimeout(()=>{const i=document.getElementById('nm');if(i)i.value=nm;createRoom()},0)}
+function onMsg(c,m){
+  const g=S.G;if(!g||!m||typeof m!=='object')return;
+  if(m.t==='join'){
+    const nm=String(m.x||'').trim().slice(0,14);if(!nm){c.send({t:'err',m:'Ungültiger Name.'});return}
+    let i=g.players.findIndex(p=>p.name===nm);
+    if(i===0){c.send({t:'err',m:'Dieser Name ist schon vergeben.'});return}
+    if(i<0){
+      if(g.phase!=='lobby'){c.send({t:'err',m:'Das Spiel läuft schon. Tritt mit einem Namen bei, der schon dabei ist, oder warte auf die nächste Partie.'});return}
+      if(g.players.length>=MAXP){c.send({t:'err',m:'Der Raum ist voll.'});return}
+      g.players.push({name:nm,conn:c,score:0});i=g.players.length-1;
+    }else g.players[i].conn=c;
+    c.pi=i;broadcast();return;
+  }
+  if(c.pi==null)return;
+  handle(c.pi,m);
+}
+const cw=x=>(x+1)%S.G.players.length;
+function newRound(){
+  const g=S.G,n=g.players.length;
+  g.round++;g.qs=Array(n).fill(null);
+  g.ans=Array(n).fill(null);g.ctx=Array(n).fill(null);g.votes=Array(n).fill(null);
+  g.phase='question';
+}
+function handle(i,m){
+  const g=S.G,n=g.players.length,txt=typeof m.x==='string'?m.x.trim().slice(0,140):'';
+  if(m.t==='start'&&i===0&&g.phase==='lobby'&&n>=3){newRound()}
+  else if(m.t==='q'&&g.phase==='question'&&txt&&g.qs[i]==null){
+    g.qs[i]=txt;
+    if(g.qs.every(x=>x!=null))g.phase='answer';
+  }else if(m.t==='ans'&&g.phase==='answer'&&txt&&g.ans[i]==null){
+    g.ans[i]=txt;
+    if(g.ans.every(x=>x!=null))g.phase='context';
+  }else if(m.t==='ctx'&&g.phase==='context'&&txt){
+    const a=(i-1+n)%n;
+    if(g.ctx[a]==null){g.ctx[a]=txt;
+      if(g.ctx.every(x=>x!=null)){g.order=shuffle([...g.ans.keys()]);g.k=0;g.phase='reveal'}}
+  }else if(m.t==='next'&&i===0){
+    if(g.phase==='reveal'){g.k++;if(g.k>=n)g.phase='vote'}
+    else if(g.phase==='results'){if(g.round>=ROUNDS)g.phase='final';else newRound()}
+    else if(g.phase==='final'){g.players.forEach(p=>p.score=0);g.round=0;g.phase='lobby'}
+  }else if(m.t==='vote'&&g.phase==='vote'&&g.votes[i]==null){
+    const x=m.x;
+    if(Number.isInteger(x)&&x>=0&&x<n&&x!==i&&cw(x)!==i){
+      g.votes[i]=x;
+      if(g.votes.every(v=>v!=null)){g.votes.forEach(v=>{g.players[v].score+=100;g.players[cw(v)].score+=100});g.phase='results'}
+    }
+  }
+  broadcast();
+}
+function view(i){
+  const g=S.G,n=g.players.length;
+  const b={ver:VERSION,phase:g.phase,round:g.round,names:g.players.map(p=>p.name),me:i,host:i===0,code:S.code,scores:g.players.map(p=>p.score),n};
+  const w=f=>g.players.filter((_,j)=>f(j)).map(p=>p.name);
+  if(g.phase==='question'){b.done=g.qs[i]!=null;b.wait=w(j=>g.qs[j]==null)}
+  if(g.phase==='answer'){b.prompt=g.qs[(i-1+n)%n];b.done=g.ans[i]!=null;b.wait=w(j=>g.ans[j]==null)}
+  if(g.phase==='context'){const a=(i-1+n)%n;b.shown=g.ans[a];b.done=g.ctx[a]!=null;b.wait=w(j=>g.ctx[(j-1+n)%n]==null)}
+  if(g.phase==='reveal'){const x=g.order[g.k];b.k=g.k;b.card={ctx:g.ctx[x],ans:g.ans[x]}}
+  if(g.phase==='vote'){b.cards=g.order.map(x=>({i:x,ctx:g.ctx[x],ans:g.ans[x],ok:x!==i&&cw(x)!==i}));b.voted=g.votes[i]!=null;b.wait=w(j=>g.votes[j]==null)}
+  if(g.phase==='results'){b.cards=g.order.map(x=>({ctx:g.ctx[x],ans:g.ans[x],r:g.players[x].name,w:g.players[cw(x)].name,v:g.votes.filter(v=>v===x).length}));b.last=g.round>=ROUNDS}
+  return b;
+}
+function broadcast(){
+  S.G.players.forEach((p,i)=>{
+    if(i===0)render(view(0));
+    else if(p.conn&&p.conn.open)p.conn.send({t:'view',v:view(i)});
+  });
+}
+
+/* ---------- Client ---------- */
+function joinRoom(){
+  const nm=getName();if(!nm)return;
+  const code=document.getElementById('cd').value.trim().toUpperCase();
+  if(code.length!==4){home('Bitte gib den 4-stelligen Raumcode ein.');return}
+  S.code=code;R('<div class="card big">Verbinde …</div>');
+  const p=new Peer();S.peer=p;
+  const fail=m=>home(m);
+  const to=setTimeout(()=>fail('Keine Verbindung zum Raum. Stimmt der Code?'),12000);
+  p.on('error',e=>{clearTimeout(to);fail(e.type==='peer-unavailable'?'Raum nicht gefunden. Stimmt der Code?':'Verbindungsfehler ('+e.type+').')});
+  p.on('open',()=>{
+    const c=p.connect(PFX+code,{reliable:true});S.hostConn=c;
+    c.on('open',()=>{clearTimeout(to);c.send({t:'join',x:nm})});
+    c.on('data',m=>{
+      if(m.t==='view')render(m.v);
+      if(m.t==='err'){p.destroy();home(m.m)}
+    });
+    c.on('close',()=>{home('Die Verbindung zum Host wurde getrennt. Tritt mit demselben Namen erneut bei, um weiterzuspielen.')});
+  });
+}
+
+/* ---------- Aktionen ---------- */
+function act(m){if(S.host){handle(0,m);return true}if(S.hostConn&&S.hostConn.open){S.hostConn.send(m);return true}return false}
+function sendText(t){const v=document.getElementById('t').value.trim();if(!v)return;const sb=document.getElementById('sb');sb.disabled=true;if(!act({t,x:v})){sb.disabled=false;alert('Keine Verbindung zum Host. Bitte Seite neu laden und mit demselben Namen erneut beitreten.')}}
+function idea(){document.getElementById('t').value=PROMPTS[Math.random()*PROMPTS.length|0]}
+function pickCard(i){S.sel=i;document.querySelectorAll('.pick').forEach(e=>e.classList.toggle('sel',+e.dataset.i===i));document.getElementById('vb').disabled=false}
+function castVote(){if(S.sel!=null)act({t:'vote',x:S.sel})}
+
+/* ---------- Anzeige ---------- */
+const card=(c,extra='',attr='')=>`<div class="card pick ${extra}" ${attr}><div class="card post" style="margin:0"><div class="tag">Post</div>${esc(c.ctx)}</div><div class="card reply" style="margin:8px 0 0"><div class="tag">Antwort</div>${esc(c.ans)}</div></div>`;
+const waitLine=v=>`<p class="mut">Warte auf: ${v.wait.map(esc).join(', ')}</p>`;
+const board=v=>`<div class="card"><div class="tag">Punktestand</div>${v.names.map((nm,i)=>({nm,s:v.scores[i]})).sort((a,b)=>b.s-a.s).map(p=>`<div class="row"><span>${esc(p.nm)}</span><b>${p.s}</b></div>`).join('')}</div>`;
+
+function render(v){
+  if(v.ver!==VERSION){R('<div class="err">Diese Seite hat eine andere Version als der Host. Bitte lade sie neu (am Handy den Tab schließen und neu öffnen, am PC Strg+Shift+R).</div>');return}
+  S.V=v;
+  const old=document.getElementById('t'),oldVal=old?old.value:'',hadFocus=old&&document.activeElement===old;
+  const key=v.phase+v.round+(v.k??'');
+  if(key!==S.key){S.sel=null;S.key=key}
+  const head=`<div class="tag">Runde ${v.round}/${ROUNDS} · ${esc(v.names[v.me])}</div>`;
+  let h='';
+  if(v.phase==='lobby'){
+    const link=location.origin&&location.origin!=='null'?`${location.origin}${location.pathname}?r=${v.code}`:'';
+    h=`<h2>Lobby</h2><div class="card big"><div class="tag">Raumcode</div><div class="code">${esc(v.code)}</div>${link?`<div class="mut" style="word-break:break-all;font-size:.85rem">${esc(link)}</div>`:''}</div>
+    <div class="card"><div class="tag">Spieler (${v.n}/${MAXP})</div>${v.names.map((x,i)=>`<div>${esc(x)}${i===v.me?' (du)':''}${i===0?' 👑':''}</div>`).join('')}</div>
+    ${v.host?`<button ${v.n<3?'disabled':''} onclick="act({t:'start'})">Spiel starten${v.n<3?' (mind. 3 Spieler)':''}</button>`:'<p class="mut">Warte, bis der Host das Spiel startet …</p>'}`;
+  }else if(v.phase==='question'){
+    h=head+(v.done?`<div class="card big">✅ Frage abgeschickt</div>${waitLine(v)}`:
+    `<div class="card post"><b>Stelle eine Frage oder Aufgabe</b><div class="mut">Ein anderer Spieler beantwortet sie, ein Dritter erfindet danach einen neuen Post dazu.</div></div><textarea id="t" maxlength="140" placeholder="Deine Frage oder Aufgabe …"></textarea><button class="alt" onclick="idea()">💡 Ideen-Vorschlag</button><button id="sb" onclick="sendText('q')">Abschicken</button>`);
+  }else if(v.phase==='answer'){
+    h=head+(v.done?`<div class="card big">✅ Antwort abgeschickt</div>${waitLine(v)}`:
+    `<div class="card post"><div class="tag">Frage eines Mitspielers</div><b>${esc(v.prompt)}</b></div><textarea id="t" maxlength="140" placeholder="Deine Antwort …"></textarea><button id="sb" onclick="sendText('ans')">Abschicken</button>`);
+  }else if(v.phase==='context'){
+    h=head+(v.done?`<div class="card big">✅ Kontext abgeschickt</div>${waitLine(v)}`:
+    `<div class="card reply"><div class="tag">Jemand hat geantwortet:</div>${esc(v.shown)}</div><p class="mut">Worauf könnte das die Antwort sein? Schreibe den Post, die Frage oder den Anlass.</p><textarea id="t" maxlength="140" placeholder="Der angebliche Anlass …"></textarea><button id="sb" onclick="sendText('ctx')">Abschicken</button>`);
+  }else if(v.phase==='reveal'){
+    h=`<div class="tag">Post ${v.k+1} von ${v.n} · Lest ihn laut vor!</div>${card(v.card)}`+
+    (v.host?`<button onclick="act({t:'next'})">${v.k+1<v.n?'Nächster Post':'Weiter zur Abstimmung'}</button>`:'<p class="mut">Der Host schaltet den nächsten Post frei …</p>');
+  }else if(v.phase==='vote'){
+    h=head+`<h2>Was ist am lustigsten?</h2><p class="mut">Für eigene Posts (Antwort oder Kontext) kannst du nicht stimmen.</p>`+
+    (v.voted?`<div class="card big">✅ Stimme abgegeben</div>${waitLine(v)}`:
+    v.cards.map(c=>card(c,c.ok?'':'off',`data-i="${c.i}" ${c.ok?`onclick="pickCard(${c.i})"`:''}`)).join('')+`<button id="vb" disabled onclick="castVote()">Abstimmen</button>`);
+  }else if(v.phase==='results'){
+    h=`<h2>Ergebnis Runde ${v.round}</h2>`+v.cards.map(c=>`${card(c)}<div class="row mut" style="margin:-4px 4px 12px"><span>Antwort: ${esc(c.r)} · Post: ${esc(c.w)}</span><span class="votes">${c.v} ❤</span></div>`).join('')+board(v)+
+    (v.host?`<button onclick="act({t:'next'})">${v.last?'Zum Finale':'Nächste Runde'}</button>`:'<p class="mut">Der Host geht gleich weiter …</p>');
+  }else if(v.phase==='final'){
+    const s=v.names.map((nm,i)=>({nm,s:v.scores[i]})).sort((a,b)=>b.s-a.s);
+    h=`<div class="card big">🏆<br><b style="font-size:2rem">${esc(s[0].nm)}</b><br>gewinnt mit ${s[0].s} Punkten!</div>${board(v)}`+
+    (v.host?`<button onclick="act({t:'next'})">Nochmal spielen</button>`:'<p class="mut">Der Host kann eine neue Partie starten.</p>');
+  }
+  R(h);
+  const t=document.getElementById('t');
+  if(t&&oldVal){t.value=oldVal;if(hadFocus)t.focus()}
+}
+home();
+</script>
+</body>
+</html>
